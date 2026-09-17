@@ -132,12 +132,28 @@ def load_config(path):
     session_paths = [str((base / p).resolve()) for p in codex.get("project_paths")
                      or []] or [str(r["path"]) for r in repos]
 
+    timezone_changes = raw.get("timezone_changes") or []
+    try:
+        from zoneinfo import ZoneInfo
+        previous = None
+        if not isinstance(timezone_changes, list):
+            raise ValueError("must be a list")
+        for change in timezone_changes:
+            day = datetime.strptime(change["from"], "%Y-%m-%d").date()
+            if day.isoformat() != change["from"] or (previous and day <= previous):
+                raise ValueError("dates must be unique and increasing YYYY-MM-DD values")
+            ZoneInfo(change["timezone"])
+            previous = day
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ConfigError(f"invalid timezone_changes: {exc}") from exc
+
     return {
         "project": project,
         "report_name": raw.get("report_name") or f"report{_slug(project)}.html",
         "repos": repos,
         "me": me,
         "timezone": raw.get("timezone") or DEFAULT_TIMEZONE,
+        "timezone_changes": timezone_changes,
         "deep_roots": frozenset(hotspots.get("deep_roots") or ()),
         "nested_segments": frozenset(hotspots.get("nested_segments") or ()),
         "excluded_paths": excluded,
@@ -269,14 +285,17 @@ def run(config, output_dir=None, fetch=True, month=None, today=None):
 
     repos = config["repos"]
     fetch_failures = fetch_repos(repos) if fetch else []
-    period = month_period(month, today) if month else None
+    report_now = datetime.now(get_zone(config["timezone"]))
+    period = month_period(month, today or report_now.date()) if month else None
 
     identity = resolve_identity(config["me"], repos)
     excluded = config["excluded_paths"]
 
     all_commits, branches, bodies, duplicates = [], [], {}, []
     for repo in repos:
-        all_commits.extend(extract_commits(repo["path"], repo["label"], excluded))
+        all_commits.extend(extract_commits(
+            repo["path"], repo["label"], excluded, config["timezone"],
+            config.get("timezone_changes", ())))
         branches.extend(mine_branches(
             collect_branches(repo["path"], repo["label"]), identity["emails"]))
         bodies.update(extract_bodies(repo["path"]))
@@ -290,18 +309,24 @@ def run(config, output_dir=None, fetch=True, month=None, today=None):
 
     codex = collect_codex_activity(config["codex_sessions_dir"],
                                    config["codex_project_paths"], period,
-                                   config["timezone"])
+                                   config["timezone"], config.get("timezone_changes", ()))
     # Popped, not read: the raw intervals are an input to commit annotation and
     # must not reach data.json.
     intervals = merge_intervals(codex.pop("_intervals", []))
     annotate(enriched, bodies, intervals,
              patterns=config["codex_evidence_patterns"],
-             zone=get_zone(config["timezone"]))
+             zone=get_zone(config["timezone"]),
+             timezone_changes=config.get("timezone_changes", ()))
     evidence = summarize(enriched)
 
+    timezone_label = config["timezone"] + "".join(
+        f"; {change['timezone']} from {change['from']}"
+        for change in config.get("timezone_changes", ()))
     data = build_data(
         enriched, identity, [r["label"] for r in repos], codex, evidence, branches,
-        period=period, timezone_name=config["timezone"], project=config["project"],
+        period=period, timezone_name=timezone_label, project=config["project"],
+        generated_at=report_now.strftime("%Y-%m-%d %H:%M %Z"),
+        cutoff=report_now.isoformat(),
         duplicates=duplicates, ambiguous=ambiguous,
         deep_roots=config["deep_roots"], nested_segments=config["nested_segments"],
     )

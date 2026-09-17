@@ -49,6 +49,15 @@ class TestLoadConfig(unittest.TestCase):
         make_repo(self.root, "api")
         self.addCleanup(self.tmp.cleanup)
 
+    def test_loads_and_validates_timezone_changes(self):
+        changes = [{"from": "2026-09-13", "timezone": "America/Los_Angeles"}]
+        self.assertEqual(load_config(write_config(self.root, timezone_changes=changes))["timezone_changes"], changes)
+        for changes in ([{"from": "bad", "timezone": "UTC"}],
+                        [{"from": "2026-09-13", "timezone": "Invalid/Zone"}],
+                        [{"from": "2026-09-13", "timezone": "UTC"}] * 2):
+            with self.subTest(changes=changes), self.assertRaises(ConfigError):
+                load_config(write_config(self.root, timezone_changes=changes))
+
     def test_resolves_repo_paths_against_the_config_file_not_the_cwd(self):
         # `--config some/where/audit.config.json` has to work from any cwd, so
         # relative repo paths are anchored to the config's own directory.

@@ -16,6 +16,7 @@ and the headline disagree on purpose:
   and "developer typed the next thing" is not runtime.
 """
 from collections import defaultdict
+from src.codex_tokens import summarize_tokens
 from datetime import datetime, timedelta, timezone
 
 from src.codex_sessions import (belongs_to_project, clip, find_session_files,
@@ -30,7 +31,8 @@ DEFINITIONS = {
     "task": ("One Codex session: a single conversation started in one working "
              "directory, recorded as one rollout file in the local Codex history."),
     "turn": ("One instruction from the developer plus the assistant work that "
-             "follows it, up to the next instruction or the end of the session."),
+             "follows it, until completion or interruption; older histories fall back "
+             "to the last event before the next instruction or session end."),
     "recorded_runtime": ("Wall-clock time inside turn intervals, merged so "
                          "overlapping work counts once. It includes tool execution "
                          "and waiting, and it is not developer working hours."),
@@ -75,7 +77,24 @@ def _period_bounds(period, zone):
     return start, end
 
 
-def build_activity(sessions, period=None, timezone_name=None, coverage=None):
+def _zoned_parts(interval, zone, changes):
+    """Split at each change, effective at midnight in the destination zone."""
+    start, end = interval
+    for change in changes:
+        next_zone = get_zone(change["timezone"])
+        boundary = datetime.fromisoformat(change["from"]).replace(tzinfo=next_zone)
+        if boundary <= start:
+            zone = next_zone
+            continue
+        if boundary >= end:
+            break
+        yield start, boundary, zone
+        start, zone = boundary, next_zone
+    yield start, end, zone
+
+
+def build_activity(sessions, period=None, timezone_name=None, coverage=None,
+                   timezone_changes=()):
     """Fold parsed sessions into the activity metrics. Pure: takes sessions, not paths.
 
     `available` is False when no session could be read at all. The report prints
@@ -84,7 +103,7 @@ def build_activity(sessions, period=None, timezone_name=None, coverage=None):
     support when the history simply was not found.
     """
     zone = get_zone(timezone_name)
-    bounds = _period_bounds(period, zone)
+    timezone_changes = timezone_changes or ()
     coverage = dict(coverage or {})
 
     by_day = defaultdict(lambda: {"tasks": set(), "turns": 0, "runtime_seconds": 0})
@@ -92,39 +111,55 @@ def build_activity(sessions, period=None, timezone_name=None, coverage=None):
     turns_total = 0
     all_intervals = []
     turns_without_duration = 0
+    token_records = []
 
     for index, session in enumerate(sessions):
         key = session.get("id") or session.get("path") or index
+        for record in session.get("token_records", []):
+            stamp = record["timestamp"]
+            for _, _, part_zone in _zoned_parts((stamp, stamp), zone, timezone_changes):
+                bounds = _period_bounds(period, part_zone)
+                if not bounds or bounds[0] <= stamp < bounds[1]:
+                    token_records.append((key, record))
         counted = False
         for turn in session["turns"]:
             interval = (turn["start"], turn["end"])
-            if bounds:
-                clipped = clip(interval, *bounds) if interval[1] > interval[0] else None
-                if clipped is None:
-                    # A zero-length turn has nothing to clip; keep it if its instant
-                    # falls inside the window, so it still counts as a turn.
-                    if not (bounds[0] <= interval[0] < bounds[1]):
+            turn_days = set()
+            positive = False
+            for start, end, part_zone in _zoned_parts(interval, zone, timezone_changes):
+                bounds = _period_bounds(period, part_zone)
+                if bounds:
+                    if end > start:
+                        clipped = clip((start, end), *bounds)
+                        if clipped is None:
+                            continue
+                        start, end = clipped
+                    elif not bounds[0] <= start < bounds[1]:
                         continue
-                    clipped = interval
-                interval = clipped
-            turns_total += 1
+                if end > start:
+                    positive = True
+                    all_intervals.append((start, end))
+                    turn_days.update(day for day, _ in split_by_day((start, end), part_zone))
+                else:
+                    turn_days.add(start.astimezone(part_zone).date().isoformat())
+            if not turn_days:
+                continue
             counted = True
-            if interval[1] > interval[0]:
-                all_intervals.append(interval)
-                for day, seconds in split_by_day(interval, zone):
-                    by_day[day]["runtime_seconds"] += seconds
-                    by_day[day]["tasks"].add(key)
-                    by_day[day]["turns"] += 1
-            else:
+            turns_total += 1
+            if not positive:
                 turns_without_duration += 1
-                day = interval[0].astimezone(zone).date().isoformat()
+            for day in turn_days:
                 by_day[day]["tasks"].add(key)
                 by_day[day]["turns"] += 1
         if counted:
             task_ids.add(key)
 
     merged = merge_intervals(all_intervals)
-    runtime = int(sum((e - s).total_seconds() for s, e in merged))
+    for interval in merged:
+        for start, end, part_zone in _zoned_parts(interval, zone, timezone_changes):
+            for day, seconds in split_by_day((start, end), part_zone):
+                by_day[day]["runtime_seconds"] += seconds
+    runtime = sum(v["runtime_seconds"] for v in by_day.values())
 
     days = {day: {"tasks": len(v["tasks"]), "turns": v["turns"],
                   "runtime_seconds": v["runtime_seconds"]}
@@ -139,6 +174,7 @@ def build_activity(sessions, period=None, timezone_name=None, coverage=None):
         # session was running. Underscore-prefixed because it is an intermediate
         # the caller consumes and drops: it never belongs in the written dataset.
         "_intervals": merged,
+        "tokens": summarize_tokens(token_records),
         "tasks": len(task_ids),
         "turns": turns_total,
         "runtime_seconds": runtime,
@@ -149,11 +185,12 @@ def build_activity(sessions, period=None, timezone_name=None, coverage=None):
         "coverage": coverage,
         "definitions": DEFINITIONS,
         "timezone": timezone_name or "UTC",
+        "timezone_changes": list(timezone_changes),
     }
 
 
 def collect_codex_activity(sessions_dir, project_paths=(), period=None,
-                           timezone_name=None):
+                           timezone_name=None, timezone_changes=()):
     """Read the sessions directory end to end and return the activity metrics.
 
     A missing directory is not an error: Codex may not be installed on the machine
@@ -189,4 +226,4 @@ def collect_codex_activity(sessions_dir, project_paths=(), period=None,
         sessions.append(parsed)
 
     return build_activity(sessions, period=period, timezone_name=timezone_name,
-                          coverage=coverage)
+                          coverage=coverage, timezone_changes=timezone_changes)

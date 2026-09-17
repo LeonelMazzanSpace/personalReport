@@ -8,6 +8,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from src.calendar_labels import month_key
 
@@ -108,7 +109,8 @@ def iso_week_key(dt):
     return f"{iso[0]}-W{iso[1]:02d}"
 
 
-def parse_log(output, repo, excluded=DEFAULT_EXCLUDED_PATH_PATTERNS):
+def parse_log(output, repo, excluded=DEFAULT_EXCLUDED_PATH_PATTERNS,
+              timezone_name=None, timezone_changes=()):
     """Parse `git log --pretty=format:COMMIT_START<sep>... --numstat` output."""
     commits = []
     current = None
@@ -116,7 +118,15 @@ def parse_log(output, repo, excluded=DEFAULT_EXCLUDED_PATH_PATTERNS):
         if line.startswith(MARKER):
             # maxsplit=5 keeps any separator inside the subject attached to the subject.
             _, h, email, name, stamp, subject = line.split(FIELD_SEP, 5)
-            dt = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
+            dt = datetime.fromisoformat(stamp)
+            if dt.tzinfo is not None and timezone_name:
+                zone = ZoneInfo(timezone_name)
+                for change in timezone_changes:
+                    next_zone = ZoneInfo(change["timezone"])
+                    boundary = datetime.fromisoformat(change["from"]).replace(tzinfo=next_zone)
+                    if dt >= boundary:
+                        zone = next_zone
+                dt = dt.astimezone(zone)
             date = dt.strftime("%Y-%m-%d")
             current = Commit(
                 hash=h,
@@ -187,7 +197,8 @@ def extract_bodies(repo_path):
     return parse_bodies(output)
 
 
-def extract_commits(repo_path, repo, excluded=DEFAULT_EXCLUDED_PATH_PATTERNS):
+def extract_commits(repo_path, repo, excluded=DEFAULT_EXCLUDED_PATH_PATTERNS,
+                    timezone_name=None, timezone_changes=()):
     """Run `git log` over ALL refs, excluding merge commits, and parse the result.
 
     `--all` deliberately includes refs/remotes: typically only the default branch is
@@ -196,12 +207,10 @@ def extract_commits(repo_path, repo, excluded=DEFAULT_EXCLUDED_PATH_PATTERNS):
     """
     cmd = [
         "git", "-C", str(repo_path), "log", "--all", "--no-merges",
-        # `format:` (not `format-local:`) is deliberate: it renders each commit in its
-        # OWN recorded offset, so the hour/day-of-week axes are each author's local
-        # wall-clock time, not the machine running this audit's local time.
-        "--date=format:%Y-%m-%d %H:%M:%S",
+        # Preserve the source offset before converting to the report's travel timezone.
+        "--date=format:%Y-%m-%d %H:%M:%S %z",
         f"--pretty=format:{MARKER}%H{FIELD_SEP}%ae{FIELD_SEP}%an{FIELD_SEP}%ad{FIELD_SEP}%s",
         "--numstat",
     ]
     output = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
-    return parse_log(output, repo, excluded)
+    return parse_log(output, repo, excluded, timezone_name, timezone_changes)

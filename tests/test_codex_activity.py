@@ -56,6 +56,28 @@ class TestSplitByDay(unittest.TestCase):
 
 
 class TestBuildActivity(unittest.TestCase):
+    def test_travel_schedule_assigns_each_period_to_its_local_day(self):
+        activity = build_activity([session(turns=[
+            ("2026-09-10T04:00:00", "2026-09-10T05:00:00"),
+            ("2026-09-16T04:00:00", "2026-09-16T05:00:00"),
+            ("2026-09-13T06:30:00", "2026-09-13T07:30:00"),
+        ])], timezone_name=MVD, coverage={"files_parsed": 1},
+            timezone_changes=[{"from": "2026-09-13", "timezone": "America/Los_Angeles"}])
+        self.assertEqual(activity["by_day"]["2026-09-10"]["runtime_seconds"], 3600)
+        self.assertEqual(activity["by_day"]["2026-09-15"]["runtime_seconds"], 3600)
+        self.assertEqual(activity["by_day"]["2026-09-13"]["runtime_seconds"], 3600)
+        self.assertEqual(activity["by_day"]["2026-09-13"]["turns"], 1)
+        self.assertEqual(activity["runtime_seconds"], 10800)
+        self.assertEqual(activity["turns"], 3)
+
+    def test_travel_schedule_uses_destination_timezone_at_month_end(self):
+        activity = build_activity([session(turns=[
+            ("2026-10-01T05:00:00", "2026-10-01T06:00:00"),
+        ])], period=month_period("2026-09", today=datetime(2026, 9, 30).date()),
+            timezone_name=MVD, coverage={"files_parsed": 1},
+            timezone_changes=[{"from": "2026-09-13", "timezone": "America/Los_Angeles"}])
+        self.assertEqual(activity["by_day"]["2026-09-30"]["runtime_seconds"], 3600)
+
     def test_counts_tasks_turns_and_merged_runtime(self):
         activity = build_activity(
             [session(turns=[("2026-09-10T13:00:00", "2026-09-10T13:30:00"),
@@ -78,6 +100,17 @@ class TestBuildActivity(unittest.TestCase):
         ], timezone_name=MVD, coverage={"files_parsed": 1})
         self.assertEqual(activity["runtime_seconds"], 2700)
         self.assertEqual(activity["tasks"], 2)
+
+    def test_daily_runtime_merges_overlap_across_midnight(self):
+        activity = build_activity([
+            session(id="a", turns=[("2026-09-10T23:00:00", "2026-09-11T02:00:00")]),
+            session(id="b", turns=[("2026-09-10T23:30:00", "2026-09-11T01:00:00")]),
+        ], timezone_name="UTC", coverage={"files_parsed": 2})
+        self.assertEqual(activity["by_day"]["2026-09-10"]["runtime_seconds"], 3600)
+        self.assertEqual(activity["by_day"]["2026-09-11"]["runtime_seconds"], 7200)
+        self.assertEqual(sum(d["runtime_seconds"] for d in activity["by_day"].values()),
+                         activity["runtime_seconds"])
+        self.assertEqual(activity["by_day"]["2026-09-10"]["tasks"], 2)
 
     def test_a_task_spanning_two_days_counts_once_overall_but_on_both_days(self):
         activity = build_activity(

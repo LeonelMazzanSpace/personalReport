@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+
+# Personal configuration and generated reports
+/audit.config.json
+/output/

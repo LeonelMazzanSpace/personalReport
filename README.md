@@ -20,6 +20,31 @@ Requires Python 3.9+ (stdlib only) and `git`. There is nothing to install.
 
 ---
 
+## Quick start for a new developer
+
+Clone this generator alongside the project you want to report on. From the
+cloned generator directory:
+
+```bash
+cp audit.config.example.json audit.config.json
+# Edit project, repos[].path and timezone for your project.
+python3 audit.py --config audit.config.json --month 2026-09
+```
+
+Replace the month with the reporting month you need. Repository paths are relative
+to the configuration file, not the current terminal directory. The example path
+`../my-project` must point to your own local Git clone.
+
+The example deliberately omits `me`: the generator reads your Git name and email
+from the audited repository. If you use multiple author emails, set `me.name` and
+`me.emails` explicitly as described below. Codex activity comes from your own
+local history; unavailable history is reported as unavailable. No shared account,
+API key, or another developer's machine paths are required.
+
+Use the same fixed `timezone` across the team for comparable charts. The example
+uses Argentina time; any IANA timezone such as `UTC` is supported. Personal
+configuration and generated output are ignored by Git.
+
 ## Usage
 
 ```bash
@@ -58,9 +83,9 @@ In `<project>/audit/output/`:
 - `data.json` — the full dataset (everything the HTML shows, and more)
 - `metrics.json` — aggregates, definitions and collection cutoff, for reproducibility
 
-Report sections: executive summary, daily activity, activity calendar, monthly
+Report sections: contribution overview with Git evidence, executive summary, daily activity, activity calendar, monthly
 breakdown, repositories, type of work, line changes by file type, Codex activity,
-working rhythm, code hotspots, branches, and methodology.
+commit timing, code hotspots, branches, and methodology.
 
 ---
 
@@ -74,7 +99,7 @@ auditProcessPersonal/         # the engine (this)
 ├── audit.py                  # CLI + pipeline orchestration
 ├── audit.config.example.json
 ├── src/                      # the pipeline modules
-└── tests/                    # 420 tests, stdlib unittest
+└── tests/                    # 436 tests, stdlib unittest
 
 <project>/audit/              # one instance
 ├── audit.config.json         # the only per-project file that is written
@@ -104,6 +129,7 @@ See [`audit.config.example.json`](./audit.config.example.json).
 | `me.emails` | no | `git config user.email` | The emails whose commits are yours |
 | `me.name` | no | `git config user.name` | Your name, as it appears on the report |
 | `timezone` | no | `America/Montevideo` | Timezone for all day boundaries |
+| `timezone_changes` | no | `[]` | Ordered `{from: "YYYY-MM-DD", timezone: "Area/City"}` changes, effective at midnight in the destination timezone |
 | `report_name` | no | `report<Project>.html` | Name of the HTML file |
 | `output_dir` | no | `output` | Relative to the config |
 | `hotspots.deep_roots` | no | `[]` | Top-level directories that keep a 2nd segment |
@@ -141,9 +167,34 @@ from you plus the assistant work that follows it. **Recorded runtime** is the
 union of the turn intervals — it includes tool execution and waiting, and it is
 **not** hours worked.
 
+Runtime stops at a recorded completion, interruption, or final assistant response.
+Older histories without those markers use the last event before the next user
+instruction or the end of the file, so their duration is less precise. Daily,
+monthly, and headline runtime all count overlapping intervals once.
+
 If no history can be read, those metrics read **"Unavailable"**, never `0`: a
 zero would assert that no assistant work happened, and this data cannot support
 that claim.
+
+Token usage comes only from explicit per-response `token_usage_record` events,
+scoped to the same configured project paths and reporting dates. Repeated response
+IDs within a session count once; conflicting responses and invalid counts are
+excluded and disclosed. Cumulative legacy counters are not mixed in. The report
+shows input, cached input (a subset), output, reasoning (a subset), total tokens,
+and the first/last recorded event. Missing usage is **Unavailable**, never zero.
+Coverage is always described as partial: retained local events cannot prove a
+complete account total. Runtime and token coverage may differ, so the report does
+not compute tokens per hour, monetary cost, or hours saved. Both JSON outputs
+include these token aggregates without response IDs or prompts.
+
+The contribution overview groups authored commits by work category and shows up
+to three recent examples with repository, commit and date. It does not infer
+merged/deployed status or claim reviews and investigations without commit evidence.
+
+For a shared report, use one fixed `timezone` (the example uses
+`America/Argentina/Buenos_Aires`) and omit `timezone_changes`. The reporting
+day and chart buckets then use that zone regardless of the computer location.
+Each colleague must still configure their own Git identity and local repository paths.
 
 ### `hotspots`
 
@@ -183,6 +234,6 @@ The ones that change how the numbers read:
 - **A task counts once in the period total** however many days it spans; the
   daily table counts it on each day it was active, so that column sums to more
   than the total. The report states this.
-- Times are rendered in **each commit's own recorded offset** (`--date=format:`,
-  not `format-local:`), so the hour and day-of-week axes are the author's local
-  wall-clock time, not that of the machine running the audit.
+- Commit timestamps are converted from their Git offset to the reporting timezone
+  and dated travel changes before filtering and grouping. Commit timing charts
+  show exact counts and empty bars for zero counts; they do not measure hours worked.

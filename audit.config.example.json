@@ -1,30 +1,14 @@
 {
-  "project": "Catalyst",
-  "report_name": "reportCatalyst.html",
-  "timezone": "America/Montevideo",
-
-  "me": {
-    "name": "Leonel Mazzan",
-    "emails": ["lmazzan@spacedev.io", "lmazzan@spacedev.uy"]
-  },
-
+  "project": "MyProject",
+  "timezone": "America/Argentina/Buenos_Aires",
   "repos": [
-    { "path": "../catalyst-api", "label": "catalyst-api" },
-    { "path": "../catalyst-web", "label": "catalyst-web" }
+    {
+      "path": "../my-project",
+      "label": "my-project"
+    }
   ],
-
-  "hotspots": {
-    "deep_roots": ["src"],
-    "nested_segments": ["modules"]
-  },
-
-  "exclude_paths": [
-    "(^|/)charting_library/"
-  ],
-
   "codex": {
     "sessions_dir": "~/.codex/sessions"
   },
-
   "duplicate_scan": true
 }

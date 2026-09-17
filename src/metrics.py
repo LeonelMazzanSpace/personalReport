@@ -68,6 +68,7 @@ def build_metrics(data):
             "human_working_hours": None,
             "by_day": codex.get("by_day") if available else None,
         },
+        "tokens": codex.get("tokens") or {"available": False, "total_tokens": None},
         "commits": {
             "total": totals["commits"],
             "implementation": totals["implementation_commits"],

@@ -88,6 +88,29 @@ class TestClassifyEvent(unittest.TestCase):
 
 
 class TestParseSessionLines(unittest.TestCase):
+    def test_completion_and_abort_exclude_later_idle_events(self):
+        for kind in ("task_complete", "turn_aborted"):
+            with self.subTest(kind=kind):
+                parsed = parse_session_lines([
+                    user_msg("2026-09-10T10:00:00Z", "go"),
+                    envelope("2026-09-10T10:05:00Z", "event_msg", {"type": kind}),
+                    envelope("2026-09-11T10:00:00Z", "turn_context"),
+                    user_msg("2026-09-11T10:01:00Z", "again"),
+                    other("2026-09-11T10:03:00Z"),
+                ])
+                self.assertEqual(len(parsed["turns"]), 2)
+                self.assertEqual(parsed["turns"][0]["end"], at("2026-09-10T10:05:00"))
+                self.assertEqual(parsed["turns"][1]["start"], at("2026-09-11T10:01:00"))
+
+    def test_final_response_closes_legacy_turn_without_completion_event(self):
+        parsed = parse_session_lines([
+            user_msg("2026-09-10T10:00:00Z", "go"),
+            envelope("2026-09-10T10:05:00Z", "response_item",
+                     {"type": "message", "role": "assistant", "phase": "final_answer"}),
+            envelope("2026-09-11T10:00:00Z", "turn_context"),
+        ])
+        self.assertEqual(parsed["turns"][0]["end"], at("2026-09-10T10:05:00"))
+
     def test_reads_the_session_id_and_cwd_from_the_meta_line(self):
         session = parse_session_lines([
             envelope("2026-09-10T10:00:00Z", "session_meta",

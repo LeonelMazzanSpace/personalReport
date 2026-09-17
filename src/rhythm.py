@@ -1,8 +1,7 @@
 """Day-of-week and hour-of-day activity distributions.
 
-Both axes are the commit's OWN recorded offset, not the machine running the audit
-(see extract_commits' use of `--date=format:`), so "18:00" means six in the evening
-where the commit was made.
+Both axes use the reporting timezone and travel changes applied during extraction.
+These distributions measure commit events, not hours worked.
 """
 from src.calendar_labels import DOW_LABELS
 

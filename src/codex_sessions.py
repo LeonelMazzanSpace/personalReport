@@ -19,7 +19,8 @@ Definitions, which the report prints verbatim:
 * A **task** is one Codex session: one rollout file, one conversation started in
   one working directory.
 * A **turn** is one instruction from the developer plus the assistant work that
-  follows it, up to the next instruction or the end of the session.
+  follows it, until completion or interruption (or the last recorded event
+  before the next instruction in older histories).
 * **Recorded runtime** is the union of those turn intervals. It is wall-clock time
   during which Codex was working — which includes tool execution and waiting —
   and it is not developer working hours.
@@ -43,7 +44,7 @@ SYNTHETIC_USER_PREFIXES = (
 )
 
 # Payload `type` values that mean "the developer asked for something". Anything
-# else in the stream extends the current turn but never opens a new one.
+# else in the stream never opens a new one.
 USER_EVENT_TYPES = frozenset({"user_message", "user_turn"})
 
 
@@ -132,9 +133,9 @@ def _session_meta(record):
 def parse_session_lines(lines, path=None):
     """Turn one rollout file's lines into a session dict.
 
-    Turns are closed by the NEXT user message: a turn runs from the instruction to
-    the last recorded event before the following instruction, which is the only
-    end time the rollout actually records. A turn with no subsequent event has no
+    Completion, interruption, or a final assistant response closes a turn.
+    Older histories without those markers fall back to the last recorded event
+    before the following instruction or EOF. A turn with no subsequent event has no
     measurable duration and is counted in `turns` but contributes nothing to
     runtime — reported as `turns_without_duration` so the gap is visible.
     """
@@ -142,7 +143,7 @@ def parse_session_lines(lines, path=None):
         "path": str(path) if path else None,
         "id": None, "cwd": None,
         "start": None, "end": None,
-        "turns": [], "events": 0, "unreadable_lines": 0,
+        "turns": [], "token_records": [], "events": 0, "unreadable_lines": 0,
         "turns_without_duration": 0,
     }
     open_turn = None
@@ -168,6 +169,14 @@ def parse_session_lines(lines, path=None):
             session["unreadable_lines"] += 1
             continue
 
+        if record.get("type") == "token_usage_record":
+            payload = record.get("payload") or {}
+            if payload.get("thread_id") == session["id"]:
+                session["token_records"].append({
+                    "timestamp": stamp, "response_id": payload.get("response_id"),
+                    "usage": payload.get("usage"),
+                })
+
         session["events"] += 1
         if session["start"] is None or stamp < session["start"]:
             session["start"] = stamp
@@ -178,6 +187,16 @@ def parse_session_lines(lines, path=None):
             if open_turn is not None:
                 _close_turn(session, open_turn, last_stamp)
             open_turn = stamp
+        payload = record.get("payload")
+        payload = payload if isinstance(payload, dict) else record
+        kind = payload.get("type")
+        finished = kind in {"task_complete", "turn_aborted"} or (
+            kind == "message" and payload.get("role") == "assistant"
+            and (payload.get("phase") == "final_answer"
+                 or payload.get("channel") == "final"))
+        if finished and open_turn is not None:
+            _close_turn(session, open_turn, stamp)
+            open_turn = None
         last_stamp = stamp
 
     if open_turn is not None:

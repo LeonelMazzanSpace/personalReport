@@ -137,13 +137,12 @@ td.mono, .mono { font-family: var(--mono); font-size: 12px; }
 .charts-row { display: grid; grid-template-columns: 1fr 1.5fr; gap: 16px; }
 @media (max-width: 860px) { .charts-row { grid-template-columns: 1fr; } }
 .chart-title { font-size: 12px; font-weight: 600; color: var(--text-sec); margin-bottom: 14px; }
-.vbars { display: flex; align-items: flex-end; gap: 4px; height: 140px; }
-.vbar {
-  flex: 1; min-width: 0; height: 100%;
-  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
-}
-.vbar-fill { width: 100%; min-height: 2px; border-radius: 3px 3px 0 0; }
-.vbar-label { font-size: 9px; color: var(--text-muted); margin-top: 5px; white-space: nowrap; }
+.vbars { display: flex; gap: 4px; height: 180px; }
+.vbar { flex: 1; min-width: 0; display: grid; grid-template-rows: 160px 20px; }
+.vbar-track { position: relative; height: 140px; width: 100%; align-self: end; border-bottom: 1px solid var(--border); }
+.vbar-count { position: absolute; bottom: calc(var(--bar-height) + 3px); width: 100%; text-align: center; font-size: 10px; line-height: 16px; color: var(--text-sec); font-variant-numeric: tabular-nums; }
+.vbar-fill { position: absolute; bottom: 0; height: var(--bar-height); width: 100%; border-radius: 3px 3px 0 0; }
+.vbar-label { height: 20px; line-height: 20px; text-align: center; font-size: 9px; color: var(--text-muted); white-space: nowrap; }
 .footer {
   max-width: 1240px; margin: 0 auto; padding: 20px 24px 40px;
   display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
@@ -293,6 +292,68 @@ def _codex_value(codex, key, formatter=fmt_int):
     return formatter(codex.get(key) or 0)
 
 
+def render_contributions(data):
+    """Lead with traceable work; commit evidence does not establish release status."""
+    groups = {}
+    for day, items in sorted((data.get("day_items") or {}).items(), reverse=True):
+        for item in items:
+            groups.setdefault(item["category"], []).append((day, item))
+    rows = []
+    for category in CATEGORY_ORDER:
+        entries = groups.get(category, [])
+        if not entries:
+            continue
+        examples = "<br>".join(
+            f'{esc(item["subject"])} <span class="note-cell">'
+            f'({esc(item["repo"])} · {esc(item["hash"])} · {esc(day)})</span>'
+            for day, item in entries[:3])
+        rows.append(f'<tr><td>{esc(CATEGORY_LABELS[category])}<br>'
+                    f'<span class="note-cell">{len(entries)} commits</span></td>'
+                    f'<td>{examples}</td><td class="note-cell">Recorded in Git. '
+                    'Merge and deployment not verified.</td></tr>')
+    return ('<div class="section"><div class="section-header">'
+            '<div class="section-title">Contribution overview</div>'
+            '<div class="section-hint">Work recorded during this period</div></div>'
+            '<p>This report connects recorded contributions with supporting AI usage. '
+            'The examples below come from authored commit messages; they are not a '
+            'verified list of released features. Reviews, QA and investigations that '
+            'produced no commit are not represented in this table.</p>'
+            '<div class="card"><table><thead><tr><th>Work area</th>'
+            '<th>Recent examples and evidence</th><th>Delivery evidence</th>'
+            '</tr></thead><tbody>' + ("".join(rows) or
+            '<tr><td colspan="3">No authored commits recorded in this period.</td></tr>')
+            + '</tbody></table></div><p class="section-hint">Runtime and tokens '
+            'describe assistant activity and processing volume. They do not measure '
+            'developer effort, delivery quality or hours saved.</p></div>')
+
+
+def render_tokens(data):
+    tokens = (data.get("codex") or {}).get("tokens") or {}
+    if not tokens.get("available"):
+        return ('<div class="note">Token usage: Unavailable. No valid per-response '
+                'token records were found for this project and period.</div>')
+    rows = [
+        _metric_row(label, fmt_int(tokens[key]), note)
+        for label, key, note in [
+            ("Total recorded tokens", "total_tokens", "Input + output; partial coverage"),
+            ("Input", "input_tokens", "Context processed by the assistant"),
+            ("Cached input", "cached_input_tokens", "Reused context; included in input"),
+            ("Output", "output_tokens", "Generated tokens, including reasoning"),
+            ("Reasoning", "reasoning_output_tokens", "Included in output"),
+        ]]
+    return ('<div class="card"><table class="metric-table"><thead><tr>'
+            '<th>Token usage · supporting context</th><th class="r">Tokens</th>'
+            '<th>Meaning</th></tr></thead><tbody>' + "".join(rows)
+            + '</tbody></table></div><div class="note">'
+            + f'Partial token coverage: {esc(tokens["first_event"])} → '
+            + f'{esc(tokens["last_event"])} · {fmt_int(tokens["responses"])} responses. '
+            + 'First and last events do not guarantee continuous coverage. '
+            + 'Token and runtime coverage can differ; no tokens-per-hour comparison '
+            + 'or cost estimate is made. '
+            + f'{tokens["invalid_records"]} invalid records and '
+            + f'{tokens["conflicting_responses"]} conflicting responses excluded.</div>')
+
+
 def render_kpis(data):
     t = data["totals"]
     codex = data.get("codex") or {}
@@ -312,9 +373,8 @@ def render_kpis(data):
          (f"{fmt_int(codex.get('turns') or 0)} turns · "
           f"{fmt_int(codex.get('active_days') or 0)} days with recorded activity")
          if codex.get("available") else "no local Codex history was readable"),
-        ("Recorded Codex runtime", "dark",
-         _codex_value(codex, "runtime_seconds", fmt_duration),
-         "assistant execution time, incl. tool runs and waiting — not working hours"),
+        ("Implementation commits", "dark", fmt_int(t["implementation_commits"]),
+         "feature and fix commit labels; release status not verified"),
     ]
     out = ['<div class="kpi-grid">']
     for label, tone, value, sub in cards:
@@ -360,7 +420,7 @@ def render_summary(data):
         _metric_row("File changes", fmt_int(t["files_touched"]),
                     "one count per file per commit; binaries excluded"),
         _metric_row("Codex tasks", _codex_value(codex, "tasks"),
-                    "counted once each, however many days they span"),
+                    "sessions, including delegated work; counted once across days"),
         _metric_row("Codex turns", _codex_value(codex, "turns"),
                     "instructions started inside the period"),
         _metric_row("Recorded Codex runtime",
@@ -682,7 +742,7 @@ def render_codex(data):
         out.append('<div class="kpi-grid">')
         for label, value, sub in [
             ("Tasks", fmt_int(codex["tasks"]),
-             "distinct sessions active in the period"),
+             "sessions active in the period, including delegated sessions"),
             ("Turns", fmt_int(codex["turns"]),
              "instructions started in the period"),
             ("Recorded runtime", fmt_duration(codex["runtime_seconds"]),
@@ -695,6 +755,7 @@ def render_codex(data):
                        f'<div class="kpi-sub">{esc(sub)}</div></div>')
         out.append("</div>")
 
+    out.append(render_tokens(data))
     ev = data.get("codex_evidence") or {}
     out.append(
         '<div class="card"><table><thead><tr><th>Commit-level evidence</th>'
@@ -757,14 +818,14 @@ def render_rhythm(data):
     max_dow = max(d["commits"] for d in dow) or 1
     max_hour = max((h["commits"] for h in hours), default=0) or 1
     total = sum(d["commits"] for d in dow) or 1
-    weekend_pct = round(rhythm.get("weekend_commits", 0) / total * 100)
-    off_pct = round(rhythm.get("off_hours_commits", 0) / total * 100)
 
     out = ['<div class="section"><div class="section-header">',
-           '<div class="section-title">Working rhythm</div>',
-           f'<div class="section-hint">{weekend_pct}% of commits on weekends · '
-           f'{off_pct}% outside 08:00–20:00 · each commit rendered in its own '
-           'recorded offset</div></div>',
+           '<div class="section-title">Commit timing</div>',
+           f'<div class="section-hint">{total} authored commits · '
+           f'{esc(data["meta"].get("timezone") or "UTC")}</div></div>',
+           '<p>Counts of commits by local weekday and hour, not hours worked or '
+           'Codex runtime. Each chart scales from zero to its largest count; '
+           'values are shown above the bars.</p>',
            '<div class="charts-row">',
            '<div class="card" style="padding:18px">'
            '<div class="chart-title">By day of week</div><div class="vbars">']
@@ -772,8 +833,9 @@ def render_rhythm(data):
         height = day["commits"] / max_dow * 100
         out.append(f'<div class="vbar" title="{esc(day["label"])}: '
                    f'{fmt_int(day["commits"])} commits">'
-                   f'<div class="vbar-fill" style="height:{height:.1f}%;'
-                   f'background:var(--blue)"></div>'
+                   f'<div class="vbar-track" style="--bar-height:{height:.1f}%">'
+                   f'<div class="vbar-count">{day["commits"]}</div>'
+                   f'<div class="vbar-fill" style="background:var(--blue)"></div></div>'
                    f'<div class="vbar-label">{esc(day["label"])}</div></div>')
     out.append('</div></div>')
     out.append('<div class="card" style="padding:18px">'
@@ -783,8 +845,9 @@ def render_rhythm(data):
         label = f'{hour["hour"]:02d}' if hour["hour"] % 3 == 0 else ""
         out.append(f'<div class="vbar" title="{hour["hour"]:02d}:00 — '
                    f'{fmt_int(hour["commits"])} commits">'
-                   f'<div class="vbar-fill" style="height:{height:.1f}%;'
-                   f'background:var(--green)"></div>'
+                   f'<div class="vbar-track" style="--bar-height:{height:.1f}%">'
+                   f'<div class="vbar-count">{hour["commits"]}</div>'
+                   f'<div class="vbar-fill" style="background:var(--green)"></div></div>'
                    f'<div class="vbar-label">{label}</div></div>')
     out.append('</div></div></div></div>')
     return "".join(out)
@@ -910,9 +973,9 @@ def render_methodology(data):
         ("Human working hours", 'Not reliably measurable from available records, and '
                                 'therefore not reported.'),
         ("Timezone", f'All day boundaries use {esc(m.get("timezone") or "UTC")}. '
-                     f'Commit times are recorded in each commit\'s own offset and '
-                     f'are read as local time in that zone, which is an '
-                     f'approximation for any commit authored in a different offset.'),
+                     'Git author timestamps are converted from their source offset '
+                     'to the configured timezone and dated travel changes before '
+                     'filtering and grouping.'),
         ("Collection cutoff", esc(m.get("cutoff") or m.get("generated_at") or "—")),
     ]
     rows = "".join(f'<tr><td style="white-space:nowrap">{esc(label)}</td>'
@@ -941,8 +1004,9 @@ def generate_report(data):
     body = "".join([
         render_page_header(data),
         '<div class="page">',
-        render_notes(data),
+        render_contributions(data),
         render_kpis(data),
+        render_notes(data),
         render_summary(data),
         render_daily(data),
         render_calendar(data),

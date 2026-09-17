@@ -142,7 +142,7 @@ class TestUnavailableNeverRendersAsZero(unittest.TestCase):
     def test_real_figures_render_when_the_history_is_there(self):
         html = render_kpis(make_data(codex=CODEX_AVAILABLE))
         self.assertIn("12", html)
-        self.assertIn("2h 00m", html)
+        self.assertIn("2h 00m", render_codex(make_data(codex=CODEX_AVAILABLE)))
 
 
 class TestNotes(unittest.TestCase):
@@ -278,5 +278,5 @@ class TestGenerateReport(unittest.TestCase):
         for title in ["Executive summary", "Daily activity", "Activity calendar",
                       "Monthly breakdown", "Repositories", "Type of work",
                       "Line changes by file type", "Codex activity",
-                      "Working rhythm", "Methodology and data coverage"]:
+                      "Commit timing", "Methodology and data coverage"]:
             self.assertIn(title, html, title)

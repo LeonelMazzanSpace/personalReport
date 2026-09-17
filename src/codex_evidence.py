@@ -40,19 +40,17 @@ def has_attribution(message, patterns):
 def commit_instant(commit, zone):
     """The commit's author time as an aware datetime in the reporting timezone.
 
-    Commits are recorded in their own author offset (see extract_commits), and the
-    report's day boundaries are the reporting timezone's — so the wall-clock time
-    stored on the commit is read AS the reporting timezone's local time. That is an
-    approximation for a commit authored in another offset, and it is disclosed in
-    the methodology note rather than corrected, since the original offset is not
-    carried past extraction.
+    Extraction converts the author timestamp to the configured reporting timezone
+    and dated travel changes before storing local date/time. This reconstruction
+    uses the matching zone and retains the stored minute precision.
     """
     from datetime import datetime
     return datetime.strptime(f"{commit['date']} {commit['time']}",
                              "%Y-%m-%d %H:%M").replace(tzinfo=zone)
 
 
-def annotate(enriched, bodies, session_intervals=(), patterns=None, zone=None):
+def annotate(enriched, bodies, session_intervals=(), patterns=None, zone=None,
+             timezone_changes=()):
     """Mark every commit with `codex_attributed` and `codex_concurrent`.
 
     Mutates and returns the same list: the flags are per-commit facts that every
@@ -66,7 +64,12 @@ def annotate(enriched, bodies, session_intervals=(), patterns=None, zone=None):
         c["codex_attributed"] = has_attribution(message, compiled)
         c["codex_concurrent"] = False
         if merged and zone is not None:
-            instant = commit_instant(c, zone)
+            commit_zone = zone
+            for change in timezone_changes:
+                if c["date"] >= change["from"]:
+                    from zoneinfo import ZoneInfo
+                    commit_zone = ZoneInfo(change["timezone"])
+            instant = commit_instant(c, commit_zone)
             c["codex_concurrent"] = any(s <= instant <= e for s, e in merged)
     return enriched
 

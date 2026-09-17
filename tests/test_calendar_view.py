@@ -84,6 +84,41 @@ class TestRenderCalendar(unittest.TestCase):
                                     days=["2026-09-01", "2026-09-02"]))
         self.assertIn('data-date="2026-09-02"', html)
 
+    def test_a_cell_carries_commits_on_top_and_lines_below(self):
+        html = render_calendar(data([commit(added=1000, removed=234)],
+                                    days=["2026-09-02"]))
+        self.assertIn('<span class="n">1</span>', html)
+        self.assertIn('<span class="l">1.2k</span>', html)
+
+    def test_each_weekday_row_totals_across_the_period(self):
+        # 2026-09-02 and 2026-09-09 are both Wednesdays: one row, one total.
+        html = render_calendar(data(
+            [commit(date="2026-09-02", added=10, removed=2),
+             commit(date="2026-09-09", hash="b", added=5, removed=1)],
+            days=["2026-09-02", "2026-09-09"]))
+        body = html.split(">Wed<")[1].split("</tr>")[0]
+        self.assertIn('<span class="tc">2</span>', body)
+        self.assertIn('<span class="ta">+15</span>', body)
+        self.assertIn('<span class="tr">−3</span>', body)
+
+    def test_the_total_row_totals_each_week_and_the_whole_period(self):
+        html = render_calendar(data(
+            [commit(date="2026-09-02", added=10, removed=2),
+             commit(date="2026-09-09", hash="b", added=5, removed=1)],
+            days=["2026-09-02", "2026-09-09"]))
+        total_row = html.split('class="cal-row-total"')[1].split("</tr>")[0]
+        self.assertIn('<span class="tc">2</span>', total_row)
+        self.assertIn('<span class="ta">+15</span>', total_row)
+
+    def test_the_grid_has_seven_weekday_rows_plus_one_total_row(self):
+        html = render_calendar(data([commit()], days=["2026-09-02"]))
+        self.assertEqual(html.count('class="cal-dow-td"'), 8)
+
+    def test_the_hover_breakdown_is_disclosed_to_the_reader(self):
+        html = render_calendar(data([commit()], days=["2026-09-02"]))
+        self.assertIn("Hover any day for a breakdown", html)
+        self.assertIn("Total column totals a weekday", html)
+
     def test_a_day_with_codex_turns_is_marked(self):
         html = render_calendar(data(
             [commit()], {"2026-09-02": {"tasks": 1, "turns": 3,
@@ -94,6 +129,12 @@ class TestRenderCalendar(unittest.TestCase):
     def test_a_quiet_day_is_not_marked_as_codex_activity(self):
         html = render_calendar(data([commit()], days=["2026-09-01", "2026-09-02"]))
         self.assertIn('data-codex="0"', html)
+
+    def test_an_out_of_range_day_renders_as_an_inert_blank(self):
+        # The week column spans seven days; the ones outside the period must not
+        # be hoverable, and must carry no date for the modal to look up.
+        html = render_calendar(data([commit()], days=["2026-09-02"]))
+        self.assertIn('class="cal-cell empty"', html)
 
     def test_commit_subjects_reach_the_payload_escaped(self):
         html = render_calendar(data([commit(subject="feat: </script> break out")],

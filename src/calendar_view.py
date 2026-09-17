@@ -16,7 +16,9 @@ import html
 import json
 import math
 
-from src.calendar_labels import (DOW_LABELS, iso_week_key, month_label,
+from datetime import date, timedelta
+
+from src.calendar_labels import (DOW_LABELS, MONTH_ABBR, iso_week_key, month_label,
                                  week_bounds, week_range)
 from src.classify import CATEGORY_ORDER
 from src.format import fmt_duration, fmt_int, short_num
@@ -43,34 +45,69 @@ CALENDAR_CSS = """
 }
 .cal-swatch { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--border); }
 .cal-outer {
+  /* fit-content so the card ends where the grid ends: a five-column month would
+     otherwise sit in a card of empty white. max-width keeps a year-long grid
+     inside the page and lets overflow-x scroll it. */
+  width: fit-content; max-width: 100%;
   overflow-x: auto; background: var(--surface); border: 1px solid var(--border);
-  border-radius: 8px; box-shadow: var(--shadow-sm); padding: 12px;
+  border-radius: 8px; box-shadow: var(--shadow-sm);
 }
-/* width:auto overrides the global `table { width: 100% }`: a day grid is sized by
-   its cells, and stretching it strands the columns against the right edge. */
-.cal-table { width: auto; border-collapse: separate; border-spacing: 3px; }
-.cal-table th, .cal-table td { border: none; padding: 0; background: none; }
-.cal-dow-th {
-  font-size: 10px; font-weight: 600; color: var(--text-muted); text-align: right;
-  padding-right: 8px; white-space: nowrap; text-transform: none; letter-spacing: 0;
+/* The cells carry two numbers each, so they need a real footprint rather than the
+   26px square this grid used to be. width:auto (not the team grid's min-width:100%,
+   and not the global `table { width: 100% }`) because a month is only five week
+   columns: stretching to fill would hand every spare pixel to the sticky label
+   column and strand the cells against the right edge. Long periods still scroll,
+   via .cal-outer's overflow-x. */
+.cal-table { width: auto; border-collapse: separate; border-spacing: 0; }
+.cal-table th, .cal-table td { border: none; }
+.cal-dow-th, .cal-dow-td {
+  position: sticky; left: 0; background: var(--surface); z-index: 2;
+  min-width: 110px; padding: 6px 12px; border-right: 1px solid var(--border);
+  text-align: left; font-size: 12px; font-weight: 600; color: var(--text);
+  text-transform: none; letter-spacing: 0; white-space: nowrap;
 }
-.cal-month-th {
-  font-size: 10px; font-weight: 700; color: var(--text-sec); text-align: left;
-  padding-bottom: 4px; white-space: nowrap; text-transform: none; letter-spacing: 0;
+.cal-dow-th { z-index: 3; background: var(--bg); }
+.cal-group-th {
+  font-size: 10px; font-weight: 700; color: var(--text-sec); text-align: center;
+  padding: 5px 4px; background: var(--bg); white-space: nowrap;
+  border-bottom: 1px solid var(--border); border-left: 1px solid var(--border);
+}
+.cal-col-th {
+  font-size: 10px; font-weight: 600; color: var(--text-muted); text-transform: none;
+  letter-spacing: 0; padding: 6px 4px; text-align: center; min-width: 46px;
+  background: var(--bg); border-bottom: 1px solid var(--border); white-space: nowrap;
 }
 .cal-cell {
-  width: 26px; height: 26px; border-radius: 4px; cursor: pointer;
-  outline: 2px solid transparent; outline-offset: 1px; transition: outline-color .1s;
-  font-size: 10px; font-weight: 700; text-align: center; vertical-align: middle;
-  font-variant-numeric: tabular-nums;
+  width: 46px; height: 42px; padding: 2px; text-align: center; cursor: pointer;
+  border-right: 1px solid rgba(255,255,255,.6);
+  border-bottom: 1px solid rgba(255,255,255,.6);
+  transition: outline-color .1s; outline: 2px solid transparent; outline-offset: -2px;
 }
 .cal-cell.empty { cursor: default; }
-.cal-cell.outside { opacity: .35; }
+/* Only a day that actually recorded assistant activity carries the marker, so an
+   empty cell never reads as one that does. */
 .cal-cell[data-codex="1"] { box-shadow: inset 0 -3px 0 rgba(147,51,234,.75); }
 .cal-cell:not(.empty):hover, .cal-cell:focus-visible, .cal-cell.is-open {
   outline-color: var(--blue);
 }
-.cal-blank { width: 26px; height: 26px; }
+.cal-cell .n {
+  display: block; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.cal-cell .l { display: block; font-size: 8px; opacity: .85; }
+.cal-total-td {
+  position: sticky; right: 0; background: var(--surface); z-index: 2;
+  border-left: 1px solid var(--border); padding: 6px 12px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.cal-total-td .tc { display: block; font-size: 13px; font-weight: 700; color: var(--blue); }
+.cal-total-td .ta { display: block; font-size: 9px; color: var(--green); }
+.cal-total-td .tr { display: block; font-size: 9px; color: var(--red); }
+.cal-total-th {
+  background: var(--bg); border-bottom: 1px solid var(--border);
+  border-left: 1px solid var(--border); font-size: 10px; text-align: right;
+  padding: 6px 12px; color: var(--text-muted); text-transform: none; letter-spacing: 0;
+}
+.cal-row-total td, .cal-row-total th { background: var(--bg); font-weight: 700; }
 
 #cal-modal {
   position: fixed; z-index: 50; display: none; width: 440px;
@@ -167,29 +204,46 @@ def _legend():
     for color in HEAT_COLORS:
         out.append(f'<div class="cal-swatch" style="background:{color["bg"]}"></div>')
     out.append('<span>More</span>')
-    out.append('<span style="margin-left:14px">A purple underline marks a day with '
-               'recorded Codex activity. Click any day for its commits.</span></div>')
+    out.append('<span style="margin-left:12px">Top: commits, bottom: lines changed '
+               '(1,234 as 1.2k)</span></div>')
     return "".join(out)
 
 
-def _cell(day, row, max_commits, in_period):
-    """One day cell, or a blank when the week column has no such day in range."""
-    if day is None:
-        return '<td class="cal-blank"></td>'
-    commits = row["commits"] if row else 0
+def _cell(day, row, max_commits):
+    """One day cell, or a blank where the week column has no such day in range."""
+    if day is None or row is None:
+        return '<td class="cal-cell empty" style="background:var(--bg)"></td>'
+    commits = row["commits"]
     level = heat_level(commits, max_commits)
     color = HEAT_COLORS[level]
-    classes = "cal-cell" + ("" if row else " empty") + ("" if in_period else " outside")
-    codex = "1" if row and (row["turns"] or row["codex_attributed"]) else "0"
+    codex = "1" if row["turns"] else "0"
+    lines = short_num(row["added"] + row["removed"])
     return (
-        f'<td class="{classes}" tabindex="0" data-date="{_esc(day)}"'
+        f'<td class="cal-cell" tabindex="0" data-date="{_esc(day)}"'
         f' data-codex="{codex}" style="background:{color["bg"]};color:{color["fg"]}">'
-        f'{commits or ""}</td>'
+        f'<span class="n">{commits or "·"}</span>'
+        f'<span class="l">{lines}</span></td>'
     )
 
 
+def _total_cell(commits, added, removed):
+    return (f'<td class="cal-total-td"><span class="tc">{fmt_int(commits)}</span>'
+            f'<span class="ta">+{short_num(added) or "0"}</span>'
+            f'<span class="tr">−{short_num(removed) or "0"}</span></td>')
+
+
+def _shift(monday, dow):
+    return (date.fromisoformat(monday) + timedelta(days=dow)).isoformat()
+
+
 def render_calendar(data):
-    """The heatmap section, plus the #cal-data payload and #cal-modal the JS needs."""
+    """The activity grid, plus the #cal-data payload and #cal-modal the JS needs.
+
+    Weekdays are rows and weeks are columns, which keeps the grid a fixed seven
+    rows however long the reporting period is — a month is five columns, a year is
+    fifty-two and scrolls sideways. The right-hand Total column totals a weekday
+    across the period; the TOTAL row totals a week.
+    """
     rows = {row["date"]: row for row in data["daily"]}
     days = sorted(rows)
     weeks = calendar_weeks(days)
@@ -201,25 +255,70 @@ def render_calendar(data):
 
     max_commits = max((r["commits"] for r in rows.values()), default=0)
     in_range = set(days)
+    # Every cell's day, resolved once: the header, the body and both total passes
+    # all index the same grid, so they cannot disagree about which day is where.
+    grid = [[_shift(week_bounds(w)[0], dow) for w in weeks] for dow in range(7)]
 
     out = ['<div class="section"><div class="section-header">',
            '<div class="section-title">Activity calendar</div>',
-           '<div class="section-hint">One cell per calendar day, weeks as columns'
-           '</div></div>', _legend(), '<div class="cal-outer">',
-           '<table class="cal-table"><thead><tr><th></th>']
+           '<div class="section-hint">One cell per calendar day · weekdays as rows, '
+           'weeks as columns</div></div>', _legend(),
+           '<div class="cal-outer"><table class="cal-table"><thead>']
+
+    # Month group header, then the week columns, labelled by each week's Monday.
+    out.append('<tr><th class="cal-dow-th"></th>')
     for label, span in month_header(weeks):
-        out.append(f'<th class="cal-month-th" colspan="{span}">{_esc(label)}</th>')
-    out.append('</tr></thead><tbody>')
+        out.append(f'<th class="cal-group-th" colspan="{span}">{_esc(label)}</th>')
+    out.append('<th class="cal-total-th"></th></tr>')
+
+    out.append('<tr><th class="cal-dow-th">Day</th>')
+    for week in weeks:
+        monday = date.fromisoformat(week_bounds(week)[0])
+        out.append(f'<th class="cal-col-th">{monday.day} '
+                   f'{MONTH_ABBR[monday.month - 1]}</th>')
+    out.append('<th class="cal-total-th">Total</th></tr></thead><tbody>')
 
     for dow in range(7):
-        out.append(f'<tr><th class="cal-dow-th">{_esc(DOW_LABELS[dow])}</th>')
-        for week in weeks:
-            monday = week_bounds(week)[0]
-            day = _shift(monday, dow)
-            out.append(_cell(day if day in in_range else None,
-                             rows.get(day), max_commits, True))
+        out.append(f'<tr><th class="cal-dow-td">{_esc(DOW_LABELS[dow])}</th>')
+        day_rows = [rows.get(d) if d in in_range else None for d in grid[dow]]
+        for day, row in zip(grid[dow], day_rows):
+            out.append(_cell(day if day in in_range else None, row, max_commits))
+        out.append(_total_cell(
+            sum(r["commits"] for r in day_rows if r),
+            sum(r["added"] for r in day_rows if r),
+            sum(r["removed"] for r in day_rows if r)))
         out.append("</tr>")
-    out.append("</tbody></table></div>")
+
+    # TOTAL row: one column total per week, scaled against the largest COLUMN
+    # total rather than the largest day, or every cell here saturates.
+    week_rows = [[rows[d] for d in (grid[dow][i] for dow in range(7))
+                  if d in in_range] for i in range(len(weeks))]
+    max_week = max((sum(r["commits"] for r in wr) for wr in week_rows), default=0)
+    out.append('<tr class="cal-row-total"><th class="cal-dow-td">TOTAL</th>')
+    for week_row in week_rows:
+        commits = sum(r["commits"] for r in week_row)
+        lines = sum(r["added"] + r["removed"] for r in week_row)
+        color = HEAT_COLORS[heat_level(commits, max_week)]
+        out.append(f'<td class="cal-cell empty" '
+                   f'style="background:{color["bg"]};color:{color["fg"]}">'
+                   f'<span class="n">{commits or "·"}</span>'
+                   f'<span class="l">{short_num(lines)}</span></td>')
+    out.append(_total_cell(
+        sum(r["commits"] for r in rows.values()),
+        sum(r["added"] for r in rows.values()),
+        sum(r["removed"] for r in rows.values())))
+    out.append("</tr></tbody></table></div>")
+
+    out.append(
+        '<div class="note info" style="margin-top:12px"><strong>Reading this '
+        'grid.</strong> Each cell is one calendar day: commits on top, lines '
+        'changed below. <strong>Hover any day for a breakdown</strong> — its '
+        'commits with time, repository and line counts, plus that day\'s Codex '
+        'tasks, turns and recorded runtime; click to keep the panel open. A purple '
+        'underline marks a day with recorded Codex activity, so a cell with no '
+        'commits and an underline is review or investigation that produced no '
+        'commit. The Total column totals a weekday across the period; the TOTAL '
+        'row totals a week.</div>')
 
     payload = {
         "days": {d: _modal_row(rows[d], data["day_items"].get(d, [])) for d in days},
@@ -230,11 +329,6 @@ def render_calendar(data):
     out.append('<div id="cal-modal" role="dialog" aria-label="Day detail"></div>')
     out.append("</div>")
     return "".join(out)
-
-
-def _shift(monday, dow):
-    from datetime import date, timedelta
-    return (date.fromisoformat(monday) + timedelta(days=dow)).isoformat()
 
 
 def _modal_row(row, items):
